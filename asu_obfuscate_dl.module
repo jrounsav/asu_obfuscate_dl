@@ -1,0 +1,229 @@
+<?php
+/**
+ * Implements hook_menu()
+ */
+function asu_obfuscate_dl_menu(){
+  
+  $items = array();
+  
+  $items['ednaquery/checkAccess/%'] = array(
+    'title' => 'Check Access',
+    'page callback' => 'asu_obfuscate_dl_check_access',
+    'access arguments' => array('access content'),
+    'page arguments' => array(2),
+    'type' => MENU_CALLBACK,
+  );
+  
+  $items['admin/config/asu_obfuscate_dl'] = array(
+    'title' => 'ASU DL Obfuscation',
+    'description' => 'Obfuscation settings',
+    'position' => 'left',
+    'weight' => -100,
+    'page callback' => 'system_admin_menu_block_page',
+    'access arguments' => array('administer site configuration'),
+    'file' => 'system.admin.inc',
+    'file path' => drupal_get_path('module', 'system'),
+  );
+  
+  $items['admin/config/asu_obfuscate_dl/settings'] = array(
+    'title' => 'ASU Obfuscate DL Settings',
+    'description' => 'Configure the mod_auth_token link settings',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('asu_obfuscate_dl_form'),
+    'access arguments' => array('access administration pages'),
+    'type' => MENU_NORMAL_ITEM,
+  );
+  
+  return $items;
+}
+
+/**
+ * Implements hook_form()
+ */
+function asu_obfuscate_dl_form($form, &$form_state){
+  
+  $form = array();
+  
+  $form['asu_dl_description'] = array(
+  '#type' => 'item',
+  '#title' => t('Configuration'),
+  '#markup' => '<div>This module utilizes the Apache module mod_auth_token and these configuration settings must be confirmed with your file host.</div>',
+
+);
+  
+  $form['asu_dl_external_host'] = array(
+    '#type' => 'textfield',
+    '#title' => t('External Host URL'),
+    '#default_value' => variable_get('asu_dl_external_host', 'https://download.asu.edu/'),
+    '#size' => 60,
+    '#maxlength' => 200,
+    '#description' => t('The URL of the server that is hosting the files, if the file location is not local'),
+    '#required' => FALSE,
+  );
+  
+  $form['asu_dl_protected_folder'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Download Folder'),
+    '#default_value' => variable_get('asu_dl_protected_folder'),
+    '#size' => 60,
+    '#maxlength' => 200,
+    '#description' => t('This is the file location on the server hosting the files, if the external host field does not point to the same place.'),
+    '#required' => FALSE,
+  );
+  
+  $form['asu_dl_secret_key'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Secret Key'),
+    '#size' => 60,
+    '#maxlength' => 200,
+    '#description' => t('The secret key that will be used to generate the obfuscated URL. This must match the secret key that is being used by the file host.'),
+    '#required' => TRUE,
+  );
+
+  return system_settings_form($form);
+  
+}
+
+/**
+ * Implements hook_form_alter().
+ *
+ * Hijack the default admin save functionality for a custom submit function.
+ */
+function asu_obfuscate_dl_form_alter(&$form, &$form_state, $form_id) {   
+  
+  if ($form_id == "asu_obfuscate_dl_form") {
+    $form['#submit'][] = 'asu_obfuscate_dl_submit';
+  }
+  
+}
+
+/**
+ * Implements hook_form_submit().
+ *
+ * Custom submit to encode the secret key.
+ */
+function asu_obfuscate_dl_submit($form, &$form_state){
+  
+  $form_state['input']['asu_dl_secret_key'] = base64_encode($form_state['input']['asu_dl_secret_key']);
+  variable_set('asu_dl_secret_key', $form_state['input']['asu_dl_secret_key']);
+  
+}
+/**
+ * Check for access to a specific Software download.
+ * 
+ * asu_ednaquery_check_access($nid) accepts the ID of a node as a parameter. It then loads the node and pulls all of the groups associated with it out, storing 
+ * them in an array to be utilized by asu_ednaquery_get().
+ */
+function asu_obfuscate_dl_check_access($nid){
+  
+  drupal_load('module', 'asu_ednaquery');
+  
+  global $user;  
+  
+  $accessGroups = array();
+  
+  if(user_is_logged_in()){
+    if(isset($nid)){
+      $node = node_load($nid);
+      
+      if(!empty($node) && $node->type == "application"){
+        
+        if(isset($node->field_edna_group['und'])){
+          $access = $node->field_edna_group['und'];
+
+          foreach($access as $tid){
+            $group = taxonomy_term_load($tid['tid']);
+            array_push($accessGroups, $group);
+          }
+
+          $status = asu_ednaquery_get($user->name, $accessGroups);     
+        } else {
+          $status = FALSE;
+        }
+          
+        // The field_file_name array values may change in the future.
+        if(!empty($node->field_file_name['und'][0]['value'])){
+          $fileName = strip_tags($node->field_file_name['und'][0]['value']);
+        } else {
+          $fileName = FALSE;
+        }
+        asu_obfuscate_dl_asu_ednaquery_checkAccess($status, $fileName);
+        return '';
+        
+      } 
+    }
+  }
+}
+/**
+ * Implements hook_asu_ednaquery_checkAccess().
+ *
+ * Returns boolean value based on whether the user is able to access the desired software.
+ */
+function asu_obfuscate_dl_asu_ednaquery_checkAccess($status, $fileName){
+  
+  if($status == TRUE){
+    if($fileName){
+      $url = asu_obfuscate_dl_url($fileName);
+  
+      if($url){
+        drupal_set_message('If the download does not start automatically please click <a href="' . $url . '" target="_blank">Here</a>', 'warning', FALSE);
+        echo '<script>window.open("' . $url . '" , "_blank");</script>';
+      }
+    } else {
+      drupal_set_message('This download is currently unavailable', 'error');
+    }
+  } else {
+    drupal_set_message('Unable to Download due to permissions not set. Please select <a href="https://asu.service-now.com/ess/catalog_content.do?sysparm_content_url=com.glideapp.servicecatalog_cat_item_view.do%3F%26sysparm_id%3D2e576505d8d5a500e033f042a43ae60e" target="_blank">Request Software</a> to request this software application.');
+  } 
+  
+}
+
+/**
+ * Generate the Download URL and token.
+ * 
+ * Checks the database to see if any configuration has been made. Uses those values if they exist and
+ * generates a hash based on everything. The values should match up to the server's mod_auth_token configuration
+ * otherwise it will not work.
+ */
+function asu_obfuscate_dl_url($fileName){
+  $beginningSlash = preg_match('#^/#', $fileName);
+  if(!$beginningSlash){
+    $fileName = '/' . $fileName;
+  }
+  $serverHost = variable_get('asu_dl_external_host');
+  
+  if(empty($serverHost)){
+    $serverHost = '';
+  }
+  
+  $protectedPath = variable_get('asu_dl_protected_folder');
+  
+  if(empty($protectedPath)){
+    $protectedPath = '';
+  } 
+  
+  if($protectedPath == '' && $serverHost == ''){
+    drupal_set_message('Server access has not been configured. Please fix the admin settings.');
+    return FALSE;
+  }
+  
+  $secret = variable_get('asu_dl_secret_key');
+  
+  if(!empty($secret)){
+    $secret = base64_decode($secret);
+  } else {
+    drupal_set_message('Server access has not been configured. Please fix the admin settings.');
+    return FALSE;
+  }
+  
+  $hexTime = dechex(time());
+  
+//  $fileName = str_replace(' ', '', $fileName);
+
+  $token = md5($secret . $fileName . $hexTime);
+
+  $url = $serverHost . $protectedPath . $token. '/' . $hexTime . $fileName;
+  $url = preg_replace("/(?<!http:|https:)\/\/+/", "/", $url); //  Remove extra slashes
+  
+  return $url;
+}
